@@ -1,0 +1,6 @@
+
+
+OBJS=
+
+PitchBlack: $(objs)
+
