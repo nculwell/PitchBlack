@@ -1,6 +1,5 @@
 
 #include "SDL.h"
-#include "SDL_mixer.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,19 +28,17 @@ const int SCREEN_WIDTH = 640;
 const int SCREEN_HEIGHT = 480;
 
 // Game parameters.
-const int FPS = 5;                      // 1 frame = 1/5 sec.
-int FRAME_DUR_MS;
+#define FPS (5)                         // 1 frame = 1/5 sec.
+const int FRAME_DUR_MS = 1000 / FPS;
 const double TURN_CIRCLE_UNITS = 10.0;  // It takes 2 secs to turn 360.
 const double MOVE_RATE = 5.0;           // Move 5 pixels per frame.
 const double PLAYER_RADIUS = 3.0;
 
 // Audio parameters.
 int AUDIO_AMPLITUDE = 28000;
-//int AUDIO_FREQUENCY = 44100;
-int AUDIO_FREQUENCY = MIX_DEFAULT_FREQUENCY;
+int AUDIO_FREQUENCY = 22050; // or 44100?
 int AUDIO_CHANNELS = 2; // stereo
-// Buffer should be big enough for a frame worth of audio.
-int AUDIO_SAMPLES;
+int AUDIO_SAMPLES = 512;
 
 void init_parameters() {
 }
@@ -61,7 +58,7 @@ int quitting = 0;                          // 1 = quit the game.
 int show_game = 1;                         // Set at startup.
 int player_facing;                         // TURN_CIRCLE_UNITS, 0 = east, increases ccw.
 double player_x = 100.0, player_y = 100.0; // FIXME: Improve this.
-double sonar_facing = 0.0;                 // This is set in every frame.
+volatile double sonar_frequency = 0.0;     // This is set in every frame.
 int player_moved = 0;                      // This is set in every frame.
 
 void init();
@@ -70,7 +67,8 @@ void main_loop();
 void pump_events();
 void poll_keyboard();
 void play_sounds();
-void set_sonar_frequency(double beep_frequency);
+void audio_callback(void* userdata, Uint8* stream, int len);
+//void set_sonar_frequency(double beep_frequency);
 void update_display();
 
 int main(int argc, char** argv) {
@@ -94,8 +92,6 @@ void error(const char* msg, const char* detail) {
 
 void init() {
   // Initialize some constants.
-  FRAME_DUR_MS = 1000 / FPS;
-  AUDIO_SAMPLES = round_up_to_power_of_2(AUDIO_FREQUENCY / FPS / 2);
   player_facing = TURN_CIRCLE_UNITS / 4; // Due north.
 
   // Set up SDL.
@@ -112,16 +108,22 @@ void init() {
   if (renderer == NULL)
     error("Unable to create SDL renderer", SDL_GetError());
 
-  // Set up SDL Mixer.
-  if (0 != Mix_Init(0))
-    error("Unable to initialize SDL mixer", Mix_GetError());
-  atexit(Mix_Quit);
-  if (-1 == Mix_OpenAudio(AUDIO_FREQUENCY, AUDIO_S16SYS, AUDIO_CHANNELS, AUDIO_SAMPLES))
-    error("Mix_OpenAudio", Mix_GetError());
-  atexit(Mix_CloseAudio);
-  Mix_AllocateChannels(2); // 1 = sonar, 2 = footsteps
-  Mix_Volume(1, MIX_MAX_VOLUME / 2); // sonar volume
-  Mix_Volume(2, MIX_MAX_VOLUME / 4); // footstep volume
+  // Set up audio.
+  SDL_AudioSpec requested_audio_spec;
+  SDL_memset(&requested_audio_spec, 0, sizeof(requested_audio_spec));
+  requested_audio_spec.freq = AUDIO_FREQUENCY;
+  requested_audio_spec.format = AUDIO_S16SYS; // code is written for int16_t
+  requested_audio_spec.channels = AUDIO_CHANNELS;
+  requested_audio_spec.samples = AUDIO_SAMPLES;
+  requested_audio_spec.callback = audio_callback;
+  audio_device_id = SDL_OpenAudioDevice(
+      NULL, // no specifically requested device
+      0, // is not a recording device
+      &requested_audio_spec, // input parameters
+      NULL, // ignore output parameters (automatically convert format)
+      SDL_AUDIO_ALLOW_FORMAT_CHANGE // allow chosen format to be different
+      );                            // from requested format
+  SDL_PauseAudioDevice(audio_device_id, 0); // start playing immediately
 
   // Load image files.
   instructions_image = load_image_as_texture(instructions_image_filename);
@@ -251,9 +253,11 @@ void poll_keyboard() {
     player_x = dest_x, player_y = dest_y;
     player_moved = 1;
   }
+  // TODO: Round facing to fixed points to prevent
+  // cumulative rounding errors.
 
   // Sonar points straight ahead unless altered.
-  sonar_facing = player_heading;
+  double sonar_facing = player_heading;
   if (keyboard_state[SDL_SCANCODE_J]) {
     // Point sonar left.
     sonar_facing = player_heading + 0.5 * M_PI;
@@ -270,45 +274,153 @@ void poll_keyboard() {
   if (sonar_facing >= 2.0 * M_PI) {
     sonar_facing -= 2.0 * M_PI;
   }
-  // TODO: Round facing to fixed points to prevent
-  // cumulative rounding errors.
+
+#if 0
+  // Calculate sonar distance.
+  if (detect_collision_point(
+    double origin_x, double origin_y,
+    double dest_x, double dest_y,
+    double* collision_x, double* collision_y
+    ))
+  {
+    // do nothing for now.
+  }
+#endif
 }
+
+#if 0
+int detect_collision_point(
+    double origin_x, double origin_y,
+    double dest_x, double dest_y,
+    double* collision_x, double* collision_y
+    )
+{
+  double delta_x = dest_x - origin_x;
+  double delta_y = dest_y - origin_y;
+  double direction = arctan(delta_y / delta_x);
+  double distance_x = abs(delta_x);
+  double distance_y = abs(delta_y);
+  double move_x = 0, move_y = 0;
+  while (move_x < distance_x && move_y < distance_y) {
+    if (
+  }
+}
+#endif
 
 void play_sounds() {
 
+  SDL_LockAudioDevice(audio_device_id);
+
   // Play sonar.
-  set_sonar_frequency(2000.0);
+  if (sonar_frequency == 261.63) {
+    sonar_frequency = 293.66; // D4
+  } else {
+    sonar_frequency = 261.63; // middle C (C4)
+  }
 
   // Play footstep.
   if (player_moved) {
     // No footstep for now.
   }
+
+  SDL_UnlockAudioDevice(audio_device_id);
 }
 
-void set_sonar_frequency(double beep_frequency) {
-  // Allocate the SDL_mixer chunk.
-  unsigned wave_period_samples = (unsigned)((double)AUDIO_FREQUENCY / beep_frequency);
-  unsigned audio_buffer_length = wave_period_samples * sizeof(int16_t);
-  Mix_Chunk* chunk = malloc(sizeof(Mix_Chunk));
-  if (!chunk)
-    error("Unable to allocate audio chunk structure", strerror(errno));
-  chunk->allocated = 1;
-  chunk->abuf = malloc(audio_buffer_length);
-  if (!chunk->abuf)
-    error("Unable to allocate audio chunk buffer", strerror(errno));
-  chunk->alen = audio_buffer_length;
-  chunk->volume = MIX_MAX_VOLUME;
-  // Generate a sine wave in the buffer.
-  // int n_samples = beep_duration_ms * AUDIO_FREQUENCY / 1000;
-  for (int i=0; i < wave_period_samples; i++) {
-    double t = (double)i / wave_period_samples;
-    chunk->abuf[i] = AUDIO_AMPLITUDE * sin(t * 2 * M_PI);
+#if 0
+void audio_callback(void* userdata, Uint8* stream, int len) {
+  //fprintf(stderr, "Len: %d, Freq: %g\n", len, sonar_frequency);
+  static double sonar_phase[4] = { 0, 0, 0, 0 };
+  memset(stream, 0, len); // fill buffer with silence
+  int16_t chord[4];
+  chord[0] = sonar_frequency;
+  if (chord[0] == 261.63) {
+    chord[1] = 329.63;
+    chord[2] = 392.00;
+    chord[3] = 523.25;
+  } else if (chord[0] == 293.66) {
+    chord[1] = 349.23;
+    chord[2] = 440.00;
+    chord[3] = 587.33;
+  } else {
+    chord[1] = 0;
+    chord[2] = 0;
+    chord[3] = 0;
   }
-  // Play the buffer in an infinite loop.
-  if (-1 == Mix_HaltChannel(1))
-    error("Failed to halt channel", Mix_GetError());
-  if (-1 == Mix_PlayChannel(1, chunk, -1))
-    error("Failed to set sonar frequency", Mix_GetError());
+  double current_phase = sonar_phase;
+  unsigned n_samples = len / sizeof(int16_t);
+  int16_t* stream16 = (int16_t*)stream; // use 16-bit samples
+  for (int note = 0; note < 4; note++) {
+    double frequency = chord[note];
+    current_phase = sonar_phase;
+    if (frequency > 0) {
+      // 16-bit samples, stereo order LRLRLR
+      double wave_period_samples = (double)AUDIO_FREQUENCY / frequency;
+      double sonar_phase_increment = 2 * M_PI / wave_period_samples;
+      double volume = AUDIO_AMPLITUDE / 8;
+      unsigned i = 0;
+      while (i < n_samples) {
+        int16_t sample_value = volume * sin(current_phase);
+        // sample_value = sample_value > 0 ? volume : -volume; // square wave
+        stream16[i++] += sample_value;
+        stream16[i++] += sample_value;
+        current_phase += sonar_phase_increment;
+        if (current_phase >= 2 * M_PI)
+          current_phase = 0.0;
+      }
+    }
+  }
+  sonar_phase = current_phase;
+}
+#endif
+
+void audio_callback(void* userdata, Uint8* stream, int len) {
+  //fprintf(stderr, "Len: %d, Freq: %g\n", len, sonar_frequency);
+  static double sonar_phase[4] = { 0, 0, 0, 0 };
+  memset(stream, 0, len); // fill buffer with silence
+  double chord[4];
+  chord[0] = sonar_frequency;
+  if (chord[0] == 261.63) {
+    chord[1] = 329.63;
+    chord[2] = 392.00;
+    chord[3] = 523.25;
+  } else if (chord[0] == 293.66) {
+    chord[1] = 349.23;
+    chord[2] = 440.00;
+    chord[3] = 587.33;
+    //chord[0] = 261.63;
+    //chord[1] = 311.13;
+    //chord[2] = 392.00;
+    //chord[3] = 523.25;
+  } else {
+    fprintf(stderr, "<PLAYING NOTHING>\n");
+    chord[0] = 0;
+    chord[1] = 0;
+    chord[2] = 0;
+    chord[3] = 0;
+  }
+  // 16-bit samples, stereo order LRLRLR
+  unsigned n_samples = len / sizeof(int16_t);
+  int16_t* stream16 = (int16_t*)stream; // use 16-bit samples
+  double volume = AUDIO_AMPLITUDE / 8;
+  for (int note = 0; note < 4; note++) {
+    double frequency = chord[note];
+    if (frequency > 0) {
+      double wave_period_samples = (double)AUDIO_FREQUENCY / frequency;
+      double sonar_phase_increment = 2 * M_PI / wave_period_samples;
+      double phase = sonar_phase[note];
+      unsigned i = 0;
+      while (i < n_samples) {
+        int16_t sample_value = volume * sin(phase);
+        // sample_value = sample_value > 0 ? volume : -volume; // square wave
+        stream16[i++] += sample_value;
+        stream16[i++] += sample_value;
+        phase += sonar_phase_increment;
+        if (phase >= 2 * M_PI)
+          phase = 0.0;
+      }
+      sonar_phase[note] = phase;
+    }
+  }
 }
 
 void update_display() {
