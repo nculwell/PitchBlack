@@ -36,9 +36,15 @@ const double PLAYER_RADIUS = 3.0;
 
 // Audio parameters.
 int AUDIO_AMPLITUDE = 28000;
-int AUDIO_FREQUENCY = 22050; // or 44100?
+//int AUDIO_FREQUENCY = 48000;
+//int AUDIO_FREQUENCY = 44100;
+int AUDIO_FREQUENCY = 22050;
 int AUDIO_CHANNELS = 2; // stereo
-int AUDIO_SAMPLES = 512;
+//int AUDIO_SAMPLES = 512;
+int AUDIO_SAMPLES = 256;
+//int AUDIO_FORMAT = AUDIO_S16SYS;
+int AUDIO_FORMAT = AUDIO_S8;
+typedef int8_t AudioSample_t; // should match audio format
 
 void init_parameters() {
 }
@@ -90,6 +96,18 @@ void error(const char* msg, const char* detail) {
   exit(1);
 }
 
+const char* audio_format_to_string(SDL_AudioFormat f) {
+  static char str[64];
+  unsigned bits = f & 127;
+  sprintf(str, "AUDIO_%s%d%s"
+      , SDL_AUDIO_ISFLOAT(f) ? "F"
+        : SDL_AUDIO_ISSIGNED(f) ? "S" : "U"
+      , bits
+      , bits == 8 ? "" : SDL_AUDIO_ISBIGENDIAN(f) ? "MSB" : "LSB"
+      );
+  return str;
+}
+
 void init() {
   // Initialize some constants.
   player_facing = TURN_CIRCLE_UNITS / 4; // Due north.
@@ -110,9 +128,10 @@ void init() {
 
   // Set up audio.
   SDL_AudioSpec requested_audio_spec;
+  SDL_AudioSpec granted_audio_spec;
   SDL_memset(&requested_audio_spec, 0, sizeof(requested_audio_spec));
   requested_audio_spec.freq = AUDIO_FREQUENCY;
-  requested_audio_spec.format = AUDIO_S16SYS; // code is written for int16_t
+  requested_audio_spec.format = AUDIO_FORMAT;
   requested_audio_spec.channels = AUDIO_CHANNELS;
   requested_audio_spec.samples = AUDIO_SAMPLES;
   requested_audio_spec.callback = audio_callback;
@@ -120,10 +139,26 @@ void init() {
       NULL, // no specifically requested device
       0, // is not a recording device
       &requested_audio_spec, // input parameters
-      NULL, // ignore output parameters (automatically convert format)
+      &granted_audio_spec, // ignore output parameters (automatically convert format)
       SDL_AUDIO_ALLOW_FORMAT_CHANGE // allow chosen format to be different
       );                            // from requested format
   SDL_PauseAudioDevice(audio_device_id, 0); // start playing immediately
+
+  printf("Audio spec:\n"
+      "freq = %d\n"
+      "format = %s\n"
+      "channels = %d\n"
+      "samples = %d\n"
+      "size = %d\n"
+      "buffer time = %g ms\n"
+      , granted_audio_spec.freq
+      , audio_format_to_string(granted_audio_spec.format)
+      , granted_audio_spec.channels
+      , granted_audio_spec.samples
+      , granted_audio_spec.size
+      , (double)1000.0 * granted_audio_spec.samples / granted_audio_spec.freq
+      );
+  fflush(stdout);
 
   // Load image files.
   instructions_image = load_image_as_texture(instructions_image_filename);
@@ -150,6 +185,7 @@ SDL_Texture* load_image_as_texture(const char* image_filename) {
 
 void main_loop()
 {
+  Uint32 next_frame_ticks = SDL_GetTicks() + FRAME_DUR_MS;
   while (!quitting) {
     pump_events();   // Check control keypresses.
     poll_keyboard(); // Movement and turning.
@@ -166,7 +202,10 @@ void main_loop()
     play_sounds();
 
     // Wait for the next frame.
-    SDL_Delay(FRAME_DUR_MS); // FIXME: Implement properly.
+    while (SDL_GetTicks() < next_frame_ticks) {
+      SDL_Delay(0);
+    }
+    next_frame_ticks += FRAME_DUR_MS;
   }
 }
 
@@ -375,50 +414,25 @@ void audio_callback(void* userdata, Uint8* stream, int len) {
 
 void audio_callback(void* userdata, Uint8* stream, int len) {
   //fprintf(stderr, "Len: %d, Freq: %g\n", len, sonar_frequency);
-  static double sonar_phase[4] = { 0, 0, 0, 0 };
+  static double sonar_phase = 0;
+  AudioSample_t* streamFormatted = (AudioSample_t*)stream;
   memset(stream, 0, len); // fill buffer with silence
-  double chord[4];
-  chord[0] = sonar_frequency;
-  if (chord[0] == 261.63) {
-    chord[1] = 329.63;
-    chord[2] = 392.00;
-    chord[3] = 523.25;
-  } else if (chord[0] == 293.66) {
-    chord[1] = 349.23;
-    chord[2] = 440.00;
-    chord[3] = 587.33;
-    //chord[0] = 261.63;
-    //chord[1] = 311.13;
-    //chord[2] = 392.00;
-    //chord[3] = 523.25;
-  } else {
-    fprintf(stderr, "<PLAYING NOTHING>\n");
-    chord[0] = 0;
-    chord[1] = 0;
-    chord[2] = 0;
-    chord[3] = 0;
-  }
-  // 16-bit samples, stereo order LRLRLR
-  unsigned n_samples = len / sizeof(int16_t);
-  int16_t* stream16 = (int16_t*)stream; // use 16-bit samples
-  double volume = AUDIO_AMPLITUDE / 8;
-  for (int note = 0; note < 4; note++) {
-    double frequency = chord[note];
-    if (frequency > 0) {
-      double wave_period_samples = (double)AUDIO_FREQUENCY / frequency;
-      double sonar_phase_increment = 2 * M_PI / wave_period_samples;
-      double phase = sonar_phase[note];
-      unsigned i = 0;
-      while (i < n_samples) {
-        int16_t sample_value = volume * sin(phase);
-        // sample_value = sample_value > 0 ? volume : -volume; // square wave
-        stream16[i++] += sample_value;
-        stream16[i++] += sample_value;
-        phase += sonar_phase_increment;
-        if (phase >= 2 * M_PI)
-          phase = 0.0;
-      }
-      sonar_phase[note] = phase;
+  unsigned n_samples = len / sizeof(AudioSample_t);
+  double frequency = sonar_frequency;
+  double amplitude = 100;
+  if (frequency > 0) {
+    double wave_period_samples = (double)AUDIO_FREQUENCY / frequency;
+    double sonar_phase_increment = 2 * M_PI / wave_period_samples;
+    unsigned i = 0;
+    while (i < n_samples) {
+      AudioSample_t sample_value = amplitude * sin(sonar_phase);
+      // sample_value = sample_value > 0 ? amplitude : -amplitude; // square wave
+      //fprintf(stderr, "Phase: %3.2f ; Sample: %3d\n", sonar_phase, sample_value);
+      streamFormatted[i++] += sample_value;
+      streamFormatted[i++] += sample_value;
+      sonar_phase += sonar_phase_increment;
+      if (sonar_phase >= 2 * M_PI)
+        sonar_phase = 0;
     }
   }
 }
