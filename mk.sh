@@ -1,6 +1,6 @@
 #!/bin/sh
 
-SDL_PKGS="SDL2 SDL2_image SDL2_mixer"
+SDL_PKGS="SDL2 SDL2_mixer"
 SDL_CFLAGS=$(pkg-config --cflags $SDL_PKGS)
 SDL_LIBS=$(pkg-config --libs $SDL_PKGS)
 

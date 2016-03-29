@@ -1,6 +1,6 @@
 
 #include "SDL.h"
-//#include "SDL_mixer.h"
+#include "SDL_mixer.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,7 +37,8 @@ const double PLAYER_RADIUS = 3.0;
 
 // Audio parameters.
 int AUDIO_AMPLITUDE = 28000;
-int AUDIO_FREQUENCY = 44100;
+//int AUDIO_FREQUENCY = 44100;
+int AUDIO_FREQUENCY = MIX_DEFAULT_FREQUENCY;
 int AUDIO_CHANNELS = 2; // stereo
 // Buffer should be big enough for a frame worth of audio.
 int AUDIO_SAMPLES;
@@ -69,8 +70,8 @@ void main_loop();
 void pump_events();
 void poll_keyboard();
 void play_sounds();
+void set_sonar_frequency(double beep_frequency);
 void update_display();
-void* generate_beep(double beep_frequency, int beep_duration_ms);
 
 int main(int argc, char** argv) {
   init_parameters();
@@ -81,10 +82,13 @@ int main(int argc, char** argv) {
   return 0;
 }
 
-void error(const char* msg) {
+void error(const char* msg, const char* detail) {
+  fprintf(stderr, "Fatal error, aborting the game.\n");
   fprintf(stderr, msg);
-  fprintf(stderr, ": %s\n", SDL_GetError());
-  fprintf(stderr, "Aborting the game.\n");
+  if (detail != NULL)
+    fprintf(stderr, ": %s\n", detail);
+  else
+    fprintf(stderr, ".\n");
   exit(1);
 }
 
@@ -95,31 +99,31 @@ void init() {
   player_facing = TURN_CIRCLE_UNITS / 4; // Due north.
 
   // Set up SDL.
-  if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER) != 0)
-    error("Unable to initialize SDL");
+  if (0 != SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER))
+    error("Unable to initialize SDL", SDL_GetError());
   atexit(SDL_Quit);
-
-  SDL_AudioSpec requested_audio_spec;
-  SDL_memset(&requested_audio_spec, 0, sizeof(requested_audio_spec));
-  requested_audio_spec.freq = AUDIO_FREQUENCY;
-  requested_audio_spec.format = AUDIO_S16SYS;
-  requested_audio_spec.channels = AUDIO_CHANNELS;
-  requested_audio_spec.samples = AUDIO_SAMPLES;
-  requested_audio_spec.callback = NULL;
-  audio_device_id = SDL_OpenAudioDevice(NULL, 0, &requested_audio_spec,
-      NULL, SDL_AUDIO_ALLOW_FORMAT_CHANGE);
-  SDL_PauseAudioDevice(audio_device_id, 0);
-
   window = SDL_CreateWindow("PitchBlack",
       SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
       SCREEN_WIDTH, SCREEN_HEIGHT,
       SDL_WINDOW_INPUT_GRABBED);
   if (window == NULL)
-    error("Unable to open a window");
+    error("Unable to open a window", SDL_GetError());
   renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
   if (renderer == NULL)
-    error("Unable to create SDL renderer");
+    error("Unable to create SDL renderer", SDL_GetError());
 
+  // Set up SDL Mixer.
+  if (0 != Mix_Init(0))
+    error("Unable to initialize SDL mixer", Mix_GetError());
+  atexit(Mix_Quit);
+  if (-1 == Mix_OpenAudio(AUDIO_FREQUENCY, AUDIO_S16SYS, AUDIO_CHANNELS, AUDIO_SAMPLES))
+    error("Mix_OpenAudio", Mix_GetError());
+  atexit(Mix_CloseAudio);
+  Mix_AllocateChannels(2); // 1 = sonar, 2 = footsteps
+  Mix_Volume(1, MIX_MAX_VOLUME / 2); // sonar volume
+  Mix_Volume(2, MIX_MAX_VOLUME / 4); // footstep volume
+
+  // Load image files.
   instructions_image = load_image_as_texture(instructions_image_filename);
   gameboard_image = load_image_as_texture(gameboard_image_filename);
   player_image = load_image_as_texture(player_image_filename);
@@ -131,12 +135,12 @@ SDL_Texture* load_image_as_texture(const char* image_filename) {
   SDL_Surface* surface = SDL_LoadBMP(path);
   if (surface == NULL) {
     fprintf(stderr, "Failed to load image: %s\n", image_filename);
-    error("Load failed");
+    error("Load failed", SDL_GetError());
   }
   SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
   if (texture == NULL) {
     fprintf(stderr, "Failed to load image: %s\n", image_filename);
-    error("Failed to convert image to texture");
+    error("Failed to convert image to texture", SDL_GetError());
   }
   SDL_FreeSurface(surface);
   return texture;
@@ -273,10 +277,7 @@ void poll_keyboard() {
 void play_sounds() {
 
   // Play sonar.
-  void* sonar_audio_data = generate_beep(2000.0, FRAME_DUR_MS / 3);
-  int sonar_audio_len = AUDIO_SAMPLES;
-  if (0 != SDL_QueueAudio(audio_device_id, sonar_audio_data, sonar_audio_len))
-    error("Audio error");
+  set_sonar_frequency(2000.0);
 
   // Play footstep.
   if (player_moved) {
@@ -284,23 +285,30 @@ void play_sounds() {
   }
 }
 
-void* generate_beep(double beep_frequency, int beep_duration_ms) {
-  // static double v = 0; // Not sure what this does. Is it the phase of the sin wave?
-  static int16_t* audio_buffer = NULL;
-  if (audio_buffer == NULL) {
-    audio_buffer = malloc(AUDIO_SAMPLES * sizeof(*audio_buffer));
-    if (audio_buffer == NULL)
-      error("Out of memory allocating audio buffer.");
+void set_sonar_frequency(double beep_frequency) {
+  // Allocate the SDL_mixer chunk.
+  unsigned wave_period_samples = (unsigned)((double)AUDIO_FREQUENCY / beep_frequency);
+  unsigned audio_buffer_length = wave_period_samples * sizeof(int16_t);
+  Mix_Chunk* chunk = malloc(sizeof(Mix_Chunk));
+  if (!chunk)
+    error("Unable to allocate audio chunk structure", strerror(errno));
+  chunk->allocated = 1;
+  chunk->abuf = malloc(audio_buffer_length);
+  if (!chunk->abuf)
+    error("Unable to allocate audio chunk buffer", strerror(errno));
+  chunk->alen = audio_buffer_length;
+  chunk->volume = MIX_MAX_VOLUME;
+  // Generate a sine wave in the buffer.
+  // int n_samples = beep_duration_ms * AUDIO_FREQUENCY / 1000;
+  for (int i=0; i < wave_period_samples; i++) {
+    double t = (double)i / wave_period_samples;
+    chunk->abuf[i] = AUDIO_AMPLITUDE * sin(t * 2 * M_PI);
   }
-  memset(audio_buffer, 0, AUDIO_SAMPLES * sizeof(*audio_buffer));
-  int n_samples = beep_duration_ms * AUDIO_FREQUENCY / 1000;
-  double wave_period = (double)AUDIO_FREQUENCY / beep_frequency;
-  for (int i=0; i < n_samples; i++) {
-    double t = (double)i / wave_period;
-    audio_buffer[i] = AUDIO_AMPLITUDE * sin(t * 2 * M_PI);
-    // v += beep_frequency;
-  }
-  return audio_buffer;
+  // Play the buffer in an infinite loop.
+  if (-1 == Mix_HaltChannel(1))
+    error("Failed to halt channel", Mix_GetError());
+  if (-1 == Mix_PlayChannel(1, chunk, -1))
+    error("Failed to set sonar frequency", Mix_GetError());
 }
 
 void update_display() {
