@@ -173,7 +173,7 @@ void pump_events() {
           // the state poll shouldn't have to worry about
           // the state of the control key.
           SDL_KeyboardEvent* ke = (SDL_KeyboardEvent*)&e;
-          if (ke->keysym.mod & KMOD_CTRL != 0) {
+          if ((ke->keysym.mod & KMOD_CTRL) != 0) {
             switch (ke->keysym.sym) {
               case SDLK_h:
                 // Play help.
@@ -285,7 +285,7 @@ void* generate_beep(double beep_frequency, int beep_duration_ms) {
     if (audio_buffer == NULL)
       error("Out of memory allocating audio buffer.");
   }
-  memset(audio_buffer, 0, sizeof(audio_buffer));
+  memset(audio_buffer, 0, AUDIO_SAMPLES);
   int n_samples = beep_duration_ms * AUDIO_FREQUENCY / 1000;
   for (int i=0; i < n_samples; i++) {
     audio_buffer[i] = AUDIO_AMPLITUDE * sin(v * 2 * M_PI / AUDIO_FREQUENCY);
