@@ -1,10 +1,10 @@
 #!/bin/sh
 
-SDL_DIR="SDL2-2.0.4/x86_64-w64-mingw32"
-SDL_INC="$SDL_DIR/include/SDL2"
-SDL_LIB="$SDL_DIR/lib/libSDL2.a"
+SDL_PKGS="SDL2 SDL2_image SDL2_mixer"
+SDL_CFLAGS=$(pkg-config --cflags $SDL_PKGS)
+SDL_LIBS=$(pkg-config --libs $SDL_PKGS)
 
-gcc -m32 -std=gnu99 -o PitchBlack \
-	-I$SDL_INC $SDL_LIB \
-	main.c
+echo "CFLAGS: $SDL_CFLAGS"
+echo "LIBS: $SDL_LIBS"
+gcc -std=gnu99 -Wall -Werror -o PitchBlack $SDL_CFLAGS main.c $SDL_LIBS
 
