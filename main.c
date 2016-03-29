@@ -273,7 +273,7 @@ void poll_keyboard() {
 void play_sounds() {
 
   // Play sonar.
-  void* sonar_audio_data = generate_beep(4000.0, FRAME_DUR_MS / 3);
+  void* sonar_audio_data = generate_beep(2000.0, FRAME_DUR_MS / 3);
   int sonar_audio_len = AUDIO_SAMPLES;
   if (0 != SDL_QueueAudio(audio_device_id, sonar_audio_data, sonar_audio_len))
     error("Audio error");
@@ -294,8 +294,9 @@ void* generate_beep(double beep_frequency, int beep_duration_ms) {
   }
   memset(audio_buffer, 0, AUDIO_SAMPLES * sizeof(*audio_buffer));
   int n_samples = beep_duration_ms * AUDIO_FREQUENCY / 1000;
+  double wave_period = (double)AUDIO_FREQUENCY / beep_frequency;
   for (int i=0; i < n_samples; i++) {
-    double t = (double)i / AUDIO_FREQUENCY;
+    double t = (double)i / wave_period;
     audio_buffer[i] = AUDIO_AMPLITUDE * sin(t * 2 * M_PI);
     // v += beep_frequency;
   }
