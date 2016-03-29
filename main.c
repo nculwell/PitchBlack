@@ -1,12 +1,13 @@
 
 #include "SDL.h"
 //#include "SDL_mixer.h"
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 
-#ifndef PI
-#define PI 3.14159265358979323846
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
 #endif
 
 unsigned round_up_to_power_of_2(unsigned n); // Needed for initializers.
@@ -22,6 +23,7 @@ char instructions[] =
 
 char instructions_image_filename[] = "instructions.bmp";
 char gameboard_image_filename[] = "gameboard.bmp";
+char player_image_filename[] = "player.bmp";
 
 const int SCREEN_WIDTH = 640;
 const int SCREEN_HEIGHT = 480;
@@ -50,19 +52,19 @@ SDL_Texture* instructions_image = NULL;
 SDL_Texture* gameboard_image = NULL;
 SDL_Texture* player_image = NULL;
 SDL_AudioDeviceID audio_device_id;
-SDL_AudioSpec audio_spec;
 //MixChunk* footstep_chunk;
 //MixChunk* sonar_chunk;
 
 // Game state.
 int quitting = 0;                          // 1 = quit the game.
-int show_game = 0;                         // Set at startup.
+int show_game = 1;                         // Set at startup.
 int player_facing;                         // TURN_CIRCLE_UNITS, 0 = east, increases ccw.
 double player_x = 100.0, player_y = 100.0; // FIXME: Improve this.
 double sonar_facing = 0.0;                 // This is set in every frame.
 int player_moved = 0;                      // This is set in every frame.
 
 void init();
+SDL_Texture* load_image_as_texture(const char* image_filename);
 void main_loop();
 void pump_events();
 void poll_keyboard();
@@ -89,7 +91,7 @@ void error(const char* msg) {
 void init() {
   // Initialize some constants.
   FRAME_DUR_MS = 1000 / FPS;
-  AUDIO_SAMPLES = round_up_to_power_of_2(AUDIO_FREQUENCY / FPS);
+  AUDIO_SAMPLES = round_up_to_power_of_2(AUDIO_FREQUENCY / FPS / 2);
   player_facing = TURN_CIRCLE_UNITS / 4; // Due north.
 
   // Set up SDL.
@@ -100,12 +102,12 @@ void init() {
   SDL_AudioSpec requested_audio_spec;
   SDL_memset(&requested_audio_spec, 0, sizeof(requested_audio_spec));
   requested_audio_spec.freq = AUDIO_FREQUENCY;
-  requested_audio_spec.format = AUDIO_F32;
+  requested_audio_spec.format = AUDIO_S16SYS;
   requested_audio_spec.channels = AUDIO_CHANNELS;
   requested_audio_spec.samples = AUDIO_SAMPLES;
   requested_audio_spec.callback = NULL;
   audio_device_id = SDL_OpenAudioDevice(NULL, 0, &requested_audio_spec,
-      &audio_spec, SDL_AUDIO_ALLOW_FORMAT_CHANGE);
+      NULL, SDL_AUDIO_ALLOW_FORMAT_CHANGE);
   SDL_PauseAudioDevice(audio_device_id, 0);
 
   window = SDL_CreateWindow("PitchBlack",
@@ -118,21 +120,26 @@ void init() {
   if (renderer == NULL)
     error("Unable to create SDL renderer");
 
-  SDL_Surface* instructions_surface = SDL_LoadBMP(instructions_image_filename);
-  if (instructions_surface == NULL)
-    error("Unable to load instructions image file");
-  instructions_image = SDL_CreateTextureFromSurface(renderer, instructions_surface);
-  if (instructions_image == NULL)
-    error("Unable to create instructions image renderer");
-  SDL_FreeSurface(instructions_surface);
+  instructions_image = load_image_as_texture(instructions_image_filename);
+  gameboard_image = load_image_as_texture(gameboard_image_filename);
+  player_image = load_image_as_texture(player_image_filename);
+}
 
-  SDL_Surface* gameboard_surface = SDL_LoadBMP(gameboard_image_filename);
-  if (gameboard_surface == NULL)
-    error("Unable to load gameboard image file");
-  gameboard_image = SDL_CreateTextureFromSurface(renderer, gameboard_surface);
-  if (gameboard_image == NULL)
-    error("Unable to create gameboard image renderer");
-  SDL_FreeSurface(gameboard_surface);
+SDL_Texture* load_image_as_texture(const char* image_filename) {
+  char path[100];
+  sprintf(path, "assets/%s", image_filename);
+  SDL_Surface* surface = SDL_LoadBMP(path);
+  if (surface == NULL) {
+    fprintf(stderr, "Failed to load image: %s\n", image_filename);
+    error("Load failed");
+  }
+  SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
+  if (texture == NULL) {
+    fprintf(stderr, "Failed to load image: %s\n", image_filename);
+    error("Failed to convert image to texture");
+  }
+  SDL_FreeSurface(surface);
+  return texture;
 }
 
 void main_loop()
@@ -213,7 +220,7 @@ void poll_keyboard() {
 
   // Convert player heading to radians.
   double player_heading =
-    2.0 * PI * ((double)player_facing / (double)TURN_CIRCLE_UNITS);
+    2.0 * M_PI * ((double)player_facing / (double)TURN_CIRCLE_UNITS);
   // Decompose player movement into N and E vectors.
   double player_move_n = MOVE_RATE * sin(player_heading);
   double player_move_e = MOVE_RATE * cos(player_heading);
@@ -245,19 +252,19 @@ void poll_keyboard() {
   sonar_facing = player_heading;
   if (keyboard_state[SDL_SCANCODE_J]) {
     // Point sonar left.
-    sonar_facing = player_heading + 0.5 * PI;
+    sonar_facing = player_heading + 0.5 * M_PI;
   }
   if (keyboard_state[SDL_SCANCODE_K]) {
     // Point sonar back.
-    sonar_facing = player_heading + 1.0 * PI;
+    sonar_facing = player_heading + 1.0 * M_PI;
   }
   if (keyboard_state[SDL_SCANCODE_L]) {
     // Point sonar right.
-    sonar_facing = player_heading + 1.5 * PI;
+    sonar_facing = player_heading + 1.5 * M_PI;
   }
-  // Keep facing in range [0, 2*PI).
-  if (sonar_facing >= 2.0 * PI) {
-    sonar_facing -= 2.0 * PI;
+  // Keep facing in range [0, 2*M_PI).
+  if (sonar_facing >= 2.0 * M_PI) {
+    sonar_facing -= 2.0 * M_PI;
   }
   // TODO: Round facing to fixed points to prevent
   // cumulative rounding errors.
@@ -266,7 +273,7 @@ void poll_keyboard() {
 void play_sounds() {
 
   // Play sonar.
-  void* sonar_audio_data = generate_beep(1000.0, FRAME_DUR_MS / 2);
+  void* sonar_audio_data = generate_beep(4000.0, FRAME_DUR_MS / 3);
   int sonar_audio_len = AUDIO_SAMPLES;
   if (0 != SDL_QueueAudio(audio_device_id, sonar_audio_data, sonar_audio_len))
     error("Audio error");
@@ -278,18 +285,19 @@ void play_sounds() {
 }
 
 void* generate_beep(double beep_frequency, int beep_duration_ms) {
-  static double v = 0; // Not sure what this does. Is it the phase of the sin wave?
-  static char* audio_buffer = NULL;
+  // static double v = 0; // Not sure what this does. Is it the phase of the sin wave?
+  static int16_t* audio_buffer = NULL;
   if (audio_buffer == NULL) {
-    audio_buffer = malloc(AUDIO_SAMPLES);
+    audio_buffer = malloc(AUDIO_SAMPLES * sizeof(*audio_buffer));
     if (audio_buffer == NULL)
       error("Out of memory allocating audio buffer.");
   }
-  memset(audio_buffer, 0, AUDIO_SAMPLES);
+  memset(audio_buffer, 0, AUDIO_SAMPLES * sizeof(*audio_buffer));
   int n_samples = beep_duration_ms * AUDIO_FREQUENCY / 1000;
   for (int i=0; i < n_samples; i++) {
-    audio_buffer[i] = AUDIO_AMPLITUDE * sin(v * 2 * M_PI / AUDIO_FREQUENCY);
-    v += beep_frequency;
+    double t = (double)i / AUDIO_FREQUENCY;
+    audio_buffer[i] = AUDIO_AMPLITUDE * sin(t * 2 * M_PI);
+    // v += beep_frequency;
   }
   return audio_buffer;
 }
